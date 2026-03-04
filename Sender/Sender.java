@@ -22,46 +22,30 @@ public class Sender {
 			String inputFile = args[3];
 			int timeoutMs = Integer.parseInt(args[4]);
 
-			// For stop and wait we still parse the window size, but ignore it.
-			int windowSize = args.length == 6 ? Integer.parseInt(args[5]) : 1;
-
-			// Wrap both the socket and file stream in a try-with-resources block 
-			// so they are automatically closed and don't leak resources.
 			try (DatagramSocket socket = new DatagramSocket(senderAckPort);
 			     FileInputStream file = new FileInputStream(new File(inputFile))) {
 
 				InetAddress receiverAddr = InetAddress.getByName(rcvIP);
 				socket.setSoTimeout(timeoutMs);
-
 				long startTime = System.currentTimeMillis();
-				int currentSeq = 0; // Stop and wait starts at sequence number 0
-				// Start/Send handshake
-				sendAndWaitForAck(socket, receiverAddr, rcvDataPort, DSPacket.TYPE_SOT, currentSeq, null);
-				currentSeq = (currentSeq + 1) % 128;
-
-				// Payload buffer
-				byte[] buffer = new byte[DSPacket.MAX_PAYLOAD_SIZE];
-				// Size of payload
-				int bytesRead;
-				boolean isFileEmpty = true;
-
-				// Loop while there is still data to read from file
-				while ((bytesRead = file.read(buffer)) != -1) {
-					isFileEmpty = false;
-					// creates payload of exact size of bytes we read
-					byte[] payload = new byte[bytesRead];
-					// Copy buffer payload to the new exactly sized payload
-					System.arraycopy(buffer, 0, payload, 0, bytesRead);
-
-					sendAndWaitForAck(socket, receiverAddr, rcvDataPort, DSPacket.TYPE_DATA, currentSeq, payload);
-					currentSeq = (currentSeq + 1) % 128;
-
+				if (args.length == 5) {
+					StopAndWait(socket, receiverAddr, rcvDataPort, file);
 				}
-				if (isFileEmpty) {
-					currentSeq = 1;
+				else {
+					// Perform window size checks to insure multiple of 4
+					// then run the GBN protocol
+					int windowSize = Integer.parseInt(args[5]);
+					if (windowSize % 4 != 0) {
+						System.err.println("Error: Window size is not a multiple of 4");
+						System.exit(1);
+					}
+					if (windowSize > 128) {
+						System.err.println("Error: Window size is greater than 128. (Requirement: window_size <= 128)");
+						System.exit(1);
+					}
+					GoBackN(socket, receiverAddr, rcvDataPort, windowSize, file);
 				}
 
-				sendAndWaitForAck(socket, receiverAddr, rcvDataPort, DSPacket.TYPE_EOT, currentSeq, null);
 				long endTime = System.currentTimeMillis();
 				System.out.printf("Total Transmission Time: %.2f seconds\n", (endTime - startTime) / 1000.0);
 			} // The file and socket are safely closed right here
@@ -71,6 +55,10 @@ public class Sender {
 			return;
 		}
 
+	}
+
+	private static void GoBackN(DatagramSocket socket, InetAddress receiverAddr, int rcvDataPort, int windowSize, FileInputStream file) throws IOException {
+		throw new UnsupportedOperationException("Unimplemented protocol 'GoBackN'");
 	}
 
 	private static void sendAndWaitForAck(DatagramSocket socket, InetAddress receiverAddr, int rcvDataPort,
@@ -115,5 +103,37 @@ public class Sender {
 			}
 
 		}
+	}
+
+	private static void StopAndWait(DatagramSocket socket, InetAddress receiverAddr, int rcvDataPort, FileInputStream file) throws IOException {
+				int currentSeq = 0; // Stop and wait starts at sequence number 0
+				// Start/Send handshake
+				sendAndWaitForAck(socket, receiverAddr, rcvDataPort, DSPacket.TYPE_SOT, currentSeq, null);
+				currentSeq = (currentSeq + 1) % 128;
+
+				// Payload buffer
+				byte[] buffer = new byte[DSPacket.MAX_PAYLOAD_SIZE];
+				// Size of payload
+				int bytesRead;
+				boolean isFileEmpty = true;
+
+				// Loop while there is still data to read from file
+				while ((bytesRead = file.read(buffer)) != -1) {
+					isFileEmpty = false;
+					// creates payload of exact size of bytes we read
+					byte[] payload = new byte[bytesRead];
+					// Copy buffer payload to the new exactly sized payload
+					System.arraycopy(buffer, 0, payload, 0, bytesRead);
+
+					sendAndWaitForAck(socket, receiverAddr, rcvDataPort, DSPacket.TYPE_DATA, currentSeq, payload);
+					currentSeq = (currentSeq + 1) % 128;
+
+				}
+				if (isFileEmpty) {
+					currentSeq = 1;
+				}
+
+				sendAndWaitForAck(socket, receiverAddr, rcvDataPort, DSPacket.TYPE_EOT, currentSeq, null);
+
 	}
 }
