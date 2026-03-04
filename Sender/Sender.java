@@ -35,12 +35,12 @@ public class Sender {
 					// Perform window size checks to insure multiple of 4
 					// then run the GBN protocol
 					int windowSize = Integer.parseInt(args[5]);
-					if (windowSize % 4 != 0) {
-						System.err.println("Error: Window size is not a multiple of 4");
-						System.exit(1);
-					}
 					if (windowSize > 128) {
 						System.err.println("Error: Window size is greater than 128. (Requirement: window_size <= 128)");
+						System.exit(1);
+					}
+					if (windowSize % 4 != 0) {
+						System.err.println("Error: Window size is not a multiple of 4");
 						System.exit(1);
 					}
 					GoBackN(socket, receiverAddr, rcvDataPort, windowSize, file);
