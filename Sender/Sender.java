@@ -5,6 +5,8 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.SocketTimeoutException;
+import java.util.ArrayList;
+import java.util.List;
 
 public class Sender {
 
@@ -57,9 +59,124 @@ public class Sender {
 
 	}
 
-	private static void GoBackN(DatagramSocket socket, InetAddress receiverAddr, int rcvDataPort, int windowSize, FileInputStream file) throws IOException {
-		throw new UnsupportedOperationException("Unimplemented protocol 'GoBackN'");
-	}
+	private static void GoBackN(DatagramSocket socket, InetAddress receiverAddr, int rcvDataPort,
+                            int windowSize, FileInputStream file) throws IOException {
+
+    // Send SOT packet 
+    int sotSeq = 0;
+    sendAndWaitForAck(socket, receiverAddr, rcvDataPort, DSPacket.TYPE_SOT, sotSeq, null);
+
+    // Read the file into chunks 
+    List<byte[]> chunks = new ArrayList<>();
+    byte[] buf = new byte[DSPacket.MAX_PAYLOAD_SIZE];
+    int bytesRead;
+
+    while ((bytesRead = file.read(buf)) != -1) {
+        byte[] payload = new byte[bytesRead];
+        System.arraycopy(buf, 0, payload, 0, bytesRead);
+        chunks.add(payload);
+    }
+
+    // First data packet uses sequence #1
+    int firstDataSeq = 1;
+    int totalPackets = chunks.size();
+
+    // Give every chunck a sequence number
+    int[] seqs = new int[totalPackets];
+    int seq = firstDataSeq;
+    for (int i = 0; i < totalPackets; i++) {
+        seqs[i] = seq;
+        seq = (seq + 1) % 128;
+    }
+
+    // Calculate EOT using (last DATA seq + 1) mod 128
+    int eotSeq;
+    if (totalPackets == 0) {
+        eotSeq = 1;
+    } else {
+        eotSeq = (seqs[totalPackets - 1] + 1) % 128;
+    }
+
+    // GBN State Variaables
+    int baseIndex = 0;      // first packet waiting for ACK
+    int nextIndex = 0;      // next packet to be sent
+    int lastAckedSeq = 0;   // last cumulatively acked seq (start at SOT=0)
+
+	// keeps track of timeouts (if == 3 transfer fails)
+    int consecutiveTimeouts = 0;
+
+    // Main GBN Loop --> Loops until all packets ACK (baseindex reaches totalpackets)
+    while (baseIndex < totalPackets) {
+
+        // Loop to send more packets if there's room in the window
+        while (nextIndex < totalPackets && (nextIndex - baseIndex) < windowSize) {
+            sendDataPacket(socket, receiverAddr, rcvDataPort, seqs[nextIndex], chunks.get(nextIndex));
+            nextIndex++;
+        }
+
+        // Wait for an packet (should be an ACK)
+        try {
+            byte[] ackBuf = new byte[DSPacket.MAX_PACKET_SIZE];
+            DatagramPacket ackDp = new DatagramPacket(ackBuf, ackBuf.length);
+            socket.receive(ackDp);
+
+            DSPacket ack = new DSPacket(ackDp.getData());
+            if (ack.getType() != DSPacket.TYPE_ACK) {
+                continue;
+            }
+
+            int ackSeq = ack.getSeqNum();
+            int baseSeq = seqs[baseIndex];
+            int dist = (ackSeq - baseSeq + 128) % 128;
+
+			//determine how many packets are waiting to be ACK
+            int inFlight = (nextIndex - 1) - baseIndex;
+            if (inFlight >= 0 && dist <= inFlight) {
+
+                baseIndex = baseIndex + dist + 1;
+
+                // reset timeout count
+                consecutiveTimeouts = 0;
+                lastAckedSeq = ackSeq;
+
+                // If window empty sync nextIndex to baseIndex
+                if (baseIndex > nextIndex) {
+                    nextIndex = baseIndex;
+                }
+            }
+
+		// catches timeouts (From earlier if timeout == 3)
+        } catch (SocketTimeoutException e) {
+            consecutiveTimeouts++;
+			// if no progress after 3 timeouts --> error
+            if (consecutiveTimeouts >= 3) {
+                System.err.println("Error: Unable to transfer file");
+                System.exit(1);
+            }
+
+            // if timeout --> resend packets 
+            for (int i = baseIndex; i < nextIndex; i++) {
+    			sendDataPacket(socket, receiverAddr, rcvDataPort, seqs[i], chunks.get(i));
+				}
+        }
+    }
+
+    // Once all packets are ACK --> EOT 
+    sendAndWaitForAck(socket, receiverAddr, rcvDataPort, DSPacket.TYPE_EOT, eotSeq, null);
+}
+private static void sendDataPacket(
+        DatagramSocket socket,
+        InetAddress receiverAddr,
+        int rcvDataPort,
+        int seq,
+        byte[] payload) throws IOException {
+
+    DSPacket packet = new DSPacket(DSPacket.TYPE_DATA, seq, payload);
+    byte[] bytes = packet.toBytes();
+
+    DatagramPacket out = new DatagramPacket(bytes, bytes.length, receiverAddr, rcvDataPort);
+    socket.send(out);
+}
 
 	private static void sendAndWaitForAck(DatagramSocket socket, InetAddress receiverAddr, int rcvDataPort,
 			byte typeSot, int currentSeq, byte[] payload) {
